@@ -28,11 +28,12 @@ struct ContentView: View {
     @State private var current: Stroke?
     @State private var background = Store.loadBackground()
     @State private var pickerItem: PhotosPickerItem?
+    /// 水滴が垂れ終わる時刻。それまでは滑らかに、以降は曇り直しに足りる 1 秒ごとに描き直す
+    @State private var animateUntil = Date.distantPast
 
     var body: some View {
         GeometryReader { geo in
-            // ponytail: 水滴のため常に 30fps。電池が気になれば垂れている間だけに絞る
-            TimelineView(.animation(minimumInterval: 1.0 / 30)) { timeline in
+            TimelineView(.animation(minimumInterval: animateUntil > .now ? 1.0 / 30 : 1)) { timeline in
                 ZStack {
                     backgroundView(geo.size)
                     ZStack {
@@ -46,6 +47,14 @@ struct ContentView: View {
             }
             .contentShape(Rectangle())
             .gesture(drawGesture(geo.size))
+            // 拭っている手応え。なぞった距離に応じて軽く震える
+            .sensoryFeedback(.impact(flexibility: .soft, intensity: 0.4), trigger: (current?.points.count ?? 0) / 8)
+        }
+        .task(id: animateUntil) {
+            // 垂れ終わったら描き直しの頻度を落とす
+            guard animateUntil > .now,
+                  (try? await Task.sleep(for: .seconds(animateUntil.timeIntervalSinceNow))) != nil else { return }
+            animateUntil = .distantPast
         }
         .ignoresSafeArea()
         .overlay(alignment: .bottomTrailing) {
@@ -195,6 +204,9 @@ struct ContentView: View {
                 if var stroke = current {
                     stroke.drips = makeDrips(for: stroke)
                     strokes.append(stroke)
+                    if let end = stroke.drips.map({ stroke.date + $0.delay + $0.duration }).max() {
+                        animateUntil = max(animateUntil, end)
+                    }
                 }
                 current = nil
                 strokes.removeAll { Date.now.timeIntervalSince($0.date) > fadeDuration }

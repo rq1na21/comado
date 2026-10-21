@@ -1,6 +1,7 @@
 version: 1
 bundleID: com.example.comado
 product: comado
+iconPath: Resources/AppIcon.png
 # ponytail: ウィジェットは xtool のバグで空の appex になり署名・起動に失敗する
 # (https://github.com/xtool-org/xtool/issues/313)。修正されたら戻す
 # extensions:
