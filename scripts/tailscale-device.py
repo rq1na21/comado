@@ -14,6 +14,7 @@ iOS 17+ はネットワーク越しの lockdownd (62078) を受け付けない�
     xtool dev build --sign --ipa
     uv run scripts/tailscale-device.py <iPhone の Tailscale IP> <UDID> install xtool/comado.ipa
     uv run scripts/tailscale-device.py <iPhone の Tailscale IP> <UDID> screenshot out.png
+    uv run scripts/tailscale-device.py <iPhone の Tailscale IP> <UDID> crashes <保存先ディレクトリ>
 """
 
 import asyncio
@@ -26,6 +27,7 @@ import pymobiledevice3.remote.tunnel_service as ts
 from pymobiledevice3.remote.common import TunnelProtocol
 from pymobiledevice3.remote.remote_service_discovery import RemoteServiceDiscoveryService
 from pymobiledevice3.remote.userspace_tunnel import UserspaceDialPlane
+from pymobiledevice3.services.crash_reports import CrashReportsManager
 from pymobiledevice3.services.dvt.instruments.dvt_provider import DvtProvider
 from pymobiledevice3.services.dvt.instruments.screenshot import Screenshot
 from pymobiledevice3.services.installation_proxy import InstallationProxyService
@@ -48,6 +50,14 @@ async def screenshot(rsd: RemoteServiceDiscoveryService, out: Path) -> None:
     print(f"保存: {out}")
 
 
+async def crashes(rsd: RemoteServiceDiscoveryService, out: Path) -> None:
+    """comado 関連のクラッシュログを取得する"""
+    out.mkdir(parents=True, exist_ok=True)
+    async with CrashReportsManager(rsd) as manager:
+        await manager.pull(str(out), match=r"(?i)comado", progress_bar=False)
+    print(f"保存: {out}")
+
+
 async def main(host: str, udid: str, command: str, path: Path) -> None:
     ts.USE_USERSPACE_TUNNEL = True
     service = await ts.create_core_device_tunnel_service_using_remotepairing(udid, host, REMOTE_PAIRING_PORT)
@@ -60,10 +70,10 @@ async def main(host: str, udid: str, command: str, path: Path) -> None:
                 (tunnel.address, tunnel.port), open_connection=dial_plane.dial
             ) as rsd:
                 print(f"接続: {rsd.product_type} iOS {rsd.product_version}")
-                await {"install": install, "screenshot": screenshot}[command](rsd, path)
+                await {"install": install, "screenshot": screenshot, "crashes": crashes}[command](rsd, path)
 
 
 if __name__ == "__main__":
-    if len(sys.argv) != 5 or sys.argv[3] not in ("install", "screenshot"):
+    if len(sys.argv) != 5 or sys.argv[3] not in ("install", "screenshot", "crashes"):
         sys.exit(__doc__)
     asyncio.run(main(sys.argv[1], sys.argv[2], sys.argv[3], Path(sys.argv[4])))

@@ -78,6 +78,14 @@ uv run scripts/tailscale-device.py <iPhone の Tailscale IP> <UDID> screenshot o
 
 初回は Developer Disk Image のダウンロードとマウントが走る。iPhone のロックを解除しておくこと。
 
+### クラッシュログ
+
+```
+uv run scripts/tailscale-device.py <iPhone の Tailscale IP> <UDID> crashes <保存先ディレクトリ>
+```
+
+comado 関連のクラッシュログ（`.ips`）を取得する。
+
 ## うまくいかないとき
 
 | 症状 | 対処 |
@@ -94,7 +102,7 @@ uv run scripts/tailscale-device.py <iPhone の Tailscale IP> <UDID> screenshot o
 
 - Apple が公開していない仕組み（RemotePairing / CoreDevice）に依存している。iOS のアップデートで動かなくなる可能性がある。
 - iOS 18.2 以降は QUIC トンネルが廃止されたため、スクリプトは TCP トンネルを使っている。
-- ウィジェット拡張は xtool のバグ（[xtool-org/xtool#313](https://github.com/xtool-org/xtool/issues/313)）で署名・起動に失敗するため、現在 `xtool.yml` で無効化している。
+- ウィジェット拡張は xtool のバグ（[xtool-org/xtool#313](https://github.com/xtool-org/xtool/issues/313)）で中身が空になるため、`Package.swift` の comadoWidget ターゲットに `-u _main` を足して回避している。
 
 ## 参考
 

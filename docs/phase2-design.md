@@ -68,7 +68,7 @@ CloudKit には自動削除（TTL）がなく、定期実行できるサーバ�
 - ルーム一覧と各ルームの窓の画像は、アプリが App Group に書き出し、ウィジェットはそれを読むだけにする。
 - 同期でルームが更新されたら、そのルームの窓の画像を作り直して `WidgetCenter.reloadTimelines` を呼ぶ。
 - 更新のきっかけは CloudKit のサイレントプッシュ。**iOS が回数を絞るので即時には映らない**（数分〜遅れることがある）。
-- xtool のバグ（[#313](https://github.com/xtool-org/xtool/issues/313)）が直っていることが前提。
+- xtool のバグ（[#313](https://github.com/xtool-org/xtool/issues/313)）は `Package.swift` の `-u _main` で回避済み。
 
 ## 7. 通報・ブロック（App Store 審査 1.2）
 
