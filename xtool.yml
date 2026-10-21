@@ -1,6 +1,8 @@
 version: 1
 bundleID: com.example.comado
 product: comado
-extensions:
-  - product: comadoWidget
-    infoPath: comadoWidget-Info.plist
+# ponytail: ウィジェットは xtool のバグで空の appex になり署名・起動に失敗する
+# (https://github.com/xtool-org/xtool/issues/313)。修正されたら戻す
+# extensions:
+#   - product: comadoWidget
+#     infoPath: comadoWidget-Info.plist
