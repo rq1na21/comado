@@ -2,6 +2,8 @@ version: 1
 bundleID: com.example.comado
 product: comado
 iconPath: Resources/AppIcon.png
+entitlementsPath: comado.entitlements
 extensions:
   - product: comadoWidget
     infoPath: comadoWidget-Info.plist
+    entitlementsPath: comado.entitlements

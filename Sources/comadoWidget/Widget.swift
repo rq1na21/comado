@@ -10,27 +10,55 @@ import SwiftUI
 struct ComadoWidget: Widget {
     var body: some WidgetConfiguration {
         StaticConfiguration(kind: "ComadoWidget", provider: Provider()) { entry in
-            Text(entry.date, style: .time)
-                .containerBackground(.fill.tertiary, for: .widget)
+            Group {
+                if let image = entry.image {
+                    Image(uiImage: image).resizable().scaledToFill()
+                } else {
+                    Text("comado を開くと窓が映ります").font(.caption).padding()
+                }
+            }
+            .containerBackground(.fill.tertiary, for: .widget)
         }
+        .contentMarginsDisabled()
         .configurationDisplayName("comado")
         .description("窓の様子を表示します。")
     }
 
     struct Entry: TimelineEntry {
         var date = Date()
+        var image: UIImage?
     }
 
+    /// アプリが App Group に書き出した「snapshot-<UNIX 時刻>.jpg」を、その時刻のエントリとして並べる
     struct Provider: TimelineProvider {
         func placeholder(in context: Context) -> Entry { Entry() }
 
         func getSnapshot(in context: Context, completion: @escaping (Entry) -> Void) {
-            completion(Entry())
+            completion(entries().last { $0.date <= .now } ?? Entry())
         }
 
-        // ponytail: 固定で15分ごと。中身(窓の状態)の共有はフェーズ2で App Group 経由に
         func getTimeline(in context: Context, completion: @escaping (Timeline<Entry>) -> Void) {
-            completion(Timeline(entries: [Entry()], policy: .after(.now + 15 * 60)))
+            let entries = entries()
+            completion(Timeline(entries: entries.isEmpty ? [Entry()] : entries, policy: .never))
+        }
+
+        private func entries() -> [Entry] {
+            guard let dir = snapshotDirectory,
+                  let files = try? FileManager.default.contentsOfDirectory(at: dir, includingPropertiesForKeys: nil)
+            else { return [] }
+            return files.compactMap { url -> Entry? in
+                let name = url.deletingPathExtension().lastPathComponent
+                guard name.hasPrefix("snapshot-"), let time = TimeInterval(name.dropFirst("snapshot-".count)) else { return nil }
+                return Entry(date: Date(timeIntervalSince1970: time), image: UIImage(contentsOfFile: url.path()))
+            }
+            .sorted { $0.date < $1.date }
+        }
+
+        /// アプリ側の Snapshots.directory と同じ場所。ウィジェットの bundle ID はアプリの ID + ".comadoWidget"
+        private var snapshotDirectory: URL? {
+            guard let id = Bundle.main.bundleIdentifier else { return nil }
+            let appID = id.replacingOccurrences(of: ".comadoWidget", with: "")
+            return FileManager.default.containerURL(forSecurityApplicationGroupIdentifier: "group." + appID)
         }
     }
 }

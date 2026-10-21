@@ -1,4 +1,5 @@
 import SwiftUI
+import WidgetKit
 import PhotosUI
 import _PhotosUI_SwiftUI // xtool では cross-import overlay が自動で効かないため明示
 
@@ -30,20 +31,12 @@ struct ContentView: View {
     @State private var pickerItem: PhotosPickerItem?
     /// 水滴が垂れ終わる時刻。それまでは滑らかに、以降は曇り直しに足りる 1 秒ごとに描き直す
     @State private var animateUntil = Date.distantPast
+    @Environment(\.scenePhase) private var scenePhase
 
     var body: some View {
         GeometryReader { geo in
             TimelineView(.animation(minimumInterval: animateUntil > .now ? 1.0 / 30 : 1)) { timeline in
-                ZStack {
-                    backgroundView(geo.size)
-                    ZStack {
-                        backgroundView(geo.size).blur(radius: 30, opaque: true)
-                        Color.white.opacity(0.45)
-                        Condensation(seed: 1).equatable()
-                    }
-                    .mask { fogMask(now: timeline.date) }
-                    waterOverlay(now: timeline.date)
-                }
+                WindowView(strokes: current.map { strokes + [$0] } ?? strokes, background: background, now: timeline.date)
             }
             .contentShape(Rectangle())
             .gesture(drawGesture(geo.size))
@@ -66,12 +59,91 @@ struct ContentView: View {
             }
             .padding()
         }
+        .onChange(of: scenePhase) { _, phase in
+            if phase == .background { saveSnapshots() }
+        }
         .onChange(of: pickerItem) { _, item in
             Task {
                 guard let data = try? await item?.loadTransferable(type: Data.self),
                       let image = UIImage(data: data) else { return }
                 background = image
                 Store.saveBackground(data)
+            }
+        }
+    }
+
+    /// ウィジェット用に、今から曇りきるまでの窓を数枚描いておく。
+    /// アプリを閉じていてもウィジェットの中で曇り直しが進む
+    private func saveSnapshots() {
+        guard let dir = Snapshots.directory else { return }
+        let fm = FileManager.default
+        for old in (try? fm.contentsOfDirectory(at: dir, includingPropertiesForKeys: nil)) ?? []
+        where old.lastPathComponent.hasPrefix("snapshot-") {
+            try? fm.removeItem(at: old)
+        }
+        for step in 0...4 {
+            let date = Date.now + fadeDuration * Double(step) / 4
+            // ponytail: 画面サイズは固定。ウィジェットは中央を切り抜いて表示するので十分
+            let renderer = ImageRenderer(content: WindowView(strokes: strokes, background: background, now: date)
+                .frame(width: 390, height: 844))
+            guard let data = renderer.uiImage?.jpegData(compressionQuality: 0.8) else { continue }
+            try? data.write(to: dir.appending(path: "snapshot-\(Int(date.timeIntervalSince1970)).jpg"))
+        }
+        WidgetCenter.shared.reloadAllTimelines()
+    }
+
+    private func drawGesture(_ size: CGSize) -> some Gesture {
+        DragGesture(minimumDistance: 0)
+            .onChanged { value in
+                let point = CGPoint(x: value.location.x / size.width, y: value.location.y / size.height)
+                if current == nil { current = Stroke(points: [], date: .now) }
+                current?.points.append(point)
+            }
+            .onEnded { _ in
+                if var stroke = current {
+                    stroke.drips = makeDrips(for: stroke)
+                    strokes.append(stroke)
+                    if let end = stroke.drips.map({ stroke.date + $0.delay + $0.duration }).max() {
+                        animateUntil = max(animateUntil, end)
+                    }
+                }
+                current = nil
+                strokes.removeAll { Date.now.timeIntervalSince($0.date) > fadeDuration }
+                Store.saveStrokes(strokes)
+            }
+    }
+
+    /// 長くなぞった線ほど垂れやすい。タップ程度では垂れない
+    private func makeDrips(for stroke: Stroke) -> [Drip] {
+        let endedAt = Date.now.timeIntervalSince(stroke.date)
+        guard stroke.points.count >= 20 else { return [] }
+        let count = Int.random(in: 1...2)
+        return (0..<count).map { _ in
+            Drip(start: stroke.points.randomElement()!,
+                 length: .random(in: 0.04...0.2),
+                 delay: endedAt + .random(in: 0...3),
+                 duration: .random(in: 4...10))
+        }
+    }
+}
+
+/// 窓の見た目。アプリの画面と、ウィジェット用のスナップショットの両方で使う
+struct WindowView: View {
+    let strokes: [Stroke]
+    let background: UIImage?
+    let now: Date
+
+    var body: some View {
+        GeometryReader { geo in
+            ZStack {
+                backgroundView(geo.size)
+                ZStack {
+                    backgroundView(geo.size).blur(radius: 30, opaque: true)
+                    Color.white.opacity(0.45)
+                    Condensation(seed: 1).equatable()
+                }
+                .mask { fogMask(now: now) }
+                waterOverlay(now: now)
             }
         }
     }
@@ -94,7 +166,7 @@ struct ContentView: View {
         Canvas { ctx, size in
             ctx.fill(Path(CGRect(origin: .zero, size: size)), with: .color(.black))
             ctx.blendMode = .destinationOut
-            let all = (current.map { strokes + [$0] } ?? strokes).filter { clearness($0, now: now) > 0 }
+            let all = strokes.filter { clearness($0, now: now) > 0 }
             // 指の跡は縁を柔らかく
             ctx.drawLayer { layer in
                 layer.addFilter(.blur(radius: 6))
@@ -141,7 +213,7 @@ struct ContentView: View {
     /// 拭った跡の縁にたまった水と、垂れる水滴の先端の水玉
     private func waterOverlay(now: Date) -> some View {
         Canvas { ctx, size in
-            let all = current.map { strokes + [$0] } ?? strokes
+            let all = strokes
             // 後から拭った線が、前の線の縁の水を拭い取る
             ctx.drawLayer { layer in
                 layer.addFilter(.blur(radius: 1.5))
@@ -191,40 +263,6 @@ struct ContentView: View {
     private func clearness(_ stroke: Stroke, now: Date) -> Double {
         let t = now.timeIntervalSince(stroke.date) / fadeDuration
         return 1 - t * t * t
-    }
-
-    private func drawGesture(_ size: CGSize) -> some Gesture {
-        DragGesture(minimumDistance: 0)
-            .onChanged { value in
-                let point = CGPoint(x: value.location.x / size.width, y: value.location.y / size.height)
-                if current == nil { current = Stroke(points: [], date: .now) }
-                current?.points.append(point)
-            }
-            .onEnded { _ in
-                if var stroke = current {
-                    stroke.drips = makeDrips(for: stroke)
-                    strokes.append(stroke)
-                    if let end = stroke.drips.map({ stroke.date + $0.delay + $0.duration }).max() {
-                        animateUntil = max(animateUntil, end)
-                    }
-                }
-                current = nil
-                strokes.removeAll { Date.now.timeIntervalSince($0.date) > fadeDuration }
-                Store.saveStrokes(strokes)
-            }
-    }
-
-    /// 長くなぞった線ほど垂れやすい。タップ程度では垂れない
-    private func makeDrips(for stroke: Stroke) -> [Drip] {
-        let endedAt = Date.now.timeIntervalSince(stroke.date)
-        guard stroke.points.count >= 20 else { return [] }
-        let count = Int.random(in: 1...2)
-        return (0..<count).map { _ in
-            Drip(start: stroke.points.randomElement()!,
-                 length: .random(in: 0.04...0.2),
-                 delay: endedAt + .random(in: 0...3),
-                 duration: .random(in: 4...10))
-        }
     }
 }
 
@@ -304,5 +342,14 @@ struct SplitMix64: RandomNumberGenerator {
         z = (z ^ (z >> 30)) &* 0xBF58_476D_1CE4_E5B9
         z = (z ^ (z >> 27)) &* 0x94D0_49BB_1331_11EB
         return z ^ (z >> 31)
+    }
+}
+
+/// アプリとウィジェットで共有する置き場所 (App Group)
+enum Snapshots {
+    /// xtool は App Group の ID を「group.<書き換え後のアプリの bundle ID>」にするので、自分の bundle ID から組み立てる
+    static var directory: URL? {
+        guard let appID = Bundle.main.bundleIdentifier else { return nil }
+        return FileManager.default.containerURL(forSecurityApplicationGroupIdentifier: "group." + appID)
     }
 }
