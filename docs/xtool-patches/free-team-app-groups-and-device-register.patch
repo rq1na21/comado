@@ -1,0 +1,59 @@
+diff --git a/Sources/XKit/DeveloperServices/App IDs/Entitlements/DeveloperServicesCapability.swift b/Sources/XKit/DeveloperServices/App IDs/Entitlements/DeveloperServicesCapability.swift
+index 2dca463..5384a1d 100644
+--- a/Sources/XKit/DeveloperServices/App IDs/Entitlements/DeveloperServicesCapability.swift	
++++ b/Sources/XKit/DeveloperServices/App IDs/Entitlements/DeveloperServicesCapability.swift	
+@@ -73,9 +73,8 @@ extension DataProtectionEntitlement: EntitlementWithCapability {
+ 
+ extension AppGroupEntitlement: EntitlementWithCapability {
+     var capability: DeveloperServicesCapability {
+-        // FIXME: Enable app groups on free accounts
+-        // but we need to always assign only one group
+-        DeveloperServicesCapability(.appGroups, isFree: false)
++        // comado: 無料アカウントでも App Group を使う（グループは1つだけ割り当てる前提）
++        DeveloperServicesCapability(.appGroups, isFree: true)
+     }
+ }
+ 
+diff --git a/Sources/XToolSupport/DSCommands/DSDevicesCommand.swift b/Sources/XToolSupport/DSCommands/DSDevicesCommand.swift
+index 87b7cc5..626700b 100644
+--- a/Sources/XToolSupport/DSCommands/DSDevicesCommand.swift
++++ b/Sources/XToolSupport/DSCommands/DSDevicesCommand.swift
+@@ -9,6 +9,7 @@ struct DSDevicesCommand: AsyncParsableCommand {
+         abstract: "Interact with devices",
+         subcommands: [
+             DSDevicesListCommand.self,
++            DSDevicesRegisterCommand.self,
+         ],
+         defaultSubcommand: DSDevicesListCommand.self
+     )
+@@ -67,3 +68,30 @@ struct DSDevicesListCommand: AsyncParsableCommand {
+         }
+     }
+ }
++
++// comado: USB なしで端末を登録し直す（無料チームは 7 日で登録が切れる）
++struct DSDevicesRegisterCommand: AsyncParsableCommand {
++    static let configuration = CommandConfiguration(
++        commandName: "register",
++        abstract: "Register a device by UDID"
++    )
++
++    @Option var udid: String
++    @Option var name: String
++
++    func run() async throws {
++        let client = DeveloperAPIClient(auth: try AuthToken.saved().authData())
++        let response = try await client.devicesCreateInstance(
++            body: .json(.init(data: .init(
++                _type: .devices,
++                attributes: .init(name: name, platform: .init(.ios), udid: udid)
++            )))
++        )
++        if (try? response.conflict) != nil {
++            print("already registered (or conflict)")
++            return
++        }
++        _ = try response.created
++        print("registered")
++    }
++}

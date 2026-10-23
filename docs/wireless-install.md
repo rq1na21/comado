@@ -108,3 +108,26 @@ comado 関連のクラッシュログ（`.ips`）を取得する。
 
 - [How to remotely iterate & deploy your sideloaded iOS-apps over tailnet](https://dev.to/kvnpt/how-to-remotely-iterate-deploy-your-sideloaded-ios-apps-over-tailnet-jak)
 - [pymobiledevice3: iOS 17+ tunnels](https://github.com/doronz88/pymobiledevice3/blob/master/docs/guides/ios17-tunnels.md)
+
+## 改造版 xtool（App Group とウィジェット用）
+
+無料アカウントで App Group（アプリとウィジェットのデータ共有）を使うには、xtool 1.22.2 に
+`docs/xtool-patches/free-team-app-groups-and-device-register.patch` を当てたものが必要。
+
+- App Group を無料チームでも有効にする（[xtool PR #284](https://github.com/xtool-org/xtool/pull/284) と同じ変更）
+- `xtool ds devices register --udid <UDID> --name <名前>` を追加。無料チームの端末登録は 7 日で切れ、
+  USB なしでは xtool が登録し直さないため、署名が「There are no current IOS devices」で失敗したらこれで登録し直す
+
+ビルド（Docker を使う。初回 10 分ほど）:
+
+```
+git clone https://github.com/xtool-org/xtool && cd xtool && git checkout 1.22.2
+git apply <comado>/docs/xtool-patches/free-team-app-groups-and-device-register.patch
+docker compose run --build --rm -T xtool swift build --product xtool -c release
+# ホストの Swift ランタイムで動かす
+LD_LIBRARY_PATH=~/.local/share/swiftly/toolchains/6.4.1/usr/lib/swift/linux \
+  .build/linux/out/Products/Release-linux-x86_64/xtool dev build --sign --ipa
+```
+
+注意: アプリと拡張は並行して登録されるため、App Group を初めて作るときは両方が同時に作成を試み、
+片方が「is not available」で失敗する。もう一度実行すると、作成済みのグループを使って通る。
