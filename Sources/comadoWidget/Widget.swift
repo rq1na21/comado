@@ -1,5 +1,6 @@
 import WidgetKit
 import SwiftUI
+import os
 
 @main struct ComadoWidgetBundle: WidgetBundle {
     var body: some Widget {
@@ -20,6 +21,7 @@ struct ComadoWidget: Widget {
             .containerBackground(.fill.tertiary, for: .widget)
         }
         .contentMarginsDisabled()
+        .supportedFamilies([.systemSmall, .systemLarge]) // 窓は正方形
         .configurationDisplayName("comado")
         .description("窓の様子を表示します。")
     }
@@ -45,7 +47,11 @@ struct ComadoWidget: Widget {
         private func entries() -> [Entry] {
             guard let dir = snapshotDirectory,
                   let files = try? FileManager.default.contentsOfDirectory(at: dir, includingPropertiesForKeys: nil)
-            else { return [] }
+            else {
+                Logger().error("comado widget: App Group を読めない \(String(describing: snapshotDirectory), privacy: .public)")
+                return []
+            }
+            Logger().info("comado widget: \(files.count) 件 \(dir.path(), privacy: .public)")
             return files.compactMap { url -> Entry? in
                 let name = url.deletingPathExtension().lastPathComponent
                 guard name.hasPrefix("snapshot-"), let time = TimeInterval(name.dropFirst("snapshot-".count)) else { return nil }

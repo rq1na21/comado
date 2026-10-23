@@ -1,5 +1,6 @@
 import SwiftUI
 import WidgetKit
+import os
 import PhotosUI
 import _PhotosUI_SwiftUI // xtool では cross-import overlay が自動で効かないため明示
 
@@ -32,16 +33,49 @@ struct ContentView: View {
     /// 水滴が垂れ終わる時刻。それまでは滑らかに、以降は曇り直しに足りる 1 秒ごとに描き直す
     @State private var animateUntil = Date.distantPast
     @Environment(\.scenePhase) private var scenePhase
+    @State private var snapshotTask: Task<Void, Never>?
 
     var body: some View {
-        GeometryReader { geo in
-            TimelineView(.animation(minimumInterval: animateUntil > .now ? 1.0 / 30 : 1)) { timeline in
-                WindowView(strokes: current.map { strokes + [$0] } ?? strokes, background: background, now: timeline.date)
+        // 窓は正方形。端末の画面の形が違っても、線の形とウィジェットでの見え方が同じになる
+        TimelineView(.animation(minimumInterval: animateUntil > .now ? 1.0 / 30 : 1)) { timeline in
+            WindowView(strokes: current.map { strokes + [$0] } ?? strokes, background: background, now: timeline.date)
+        }
+        .aspectRatio(1, contentMode: .fit)
+        .overlay {
+            GeometryReader { geo in
+                Color.clear.contentShape(Rectangle()).gesture(drawGesture(geo.size))
             }
-            .contentShape(Rectangle())
-            .gesture(drawGesture(geo.size))
-            // 拭っている手応え。なぞった距離に応じて軽く震える
-            .sensoryFeedback(.impact(flexibility: .soft, intensity: 0.4), trigger: (current?.points.count ?? 0) / 8)
+        }
+        // 拭っている手応え。なぞった距離に応じて軽く震える
+        .sensoryFeedback(.impact(flexibility: .soft, intensity: 0.4), trigger: (current?.points.count ?? 0) / 8)
+        .clipShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
+        .overlay {
+            // ガラスの縁の細いハイライト
+            RoundedRectangle(cornerRadius: 22, style: .continuous).strokeBorder(.white.opacity(0.7), lineWidth: 1)
+        }
+        .padding(14)
+        .background {
+            // すりガラスの白い縁に窓をはめ込む
+            let bezel = RoundedRectangle(cornerRadius: 34, style: .continuous)
+            bezel.fill(.white.opacity(0.45))
+                .background(.ultraThinMaterial, in: bezel)
+                .overlay(bezel.strokeBorder(.white.opacity(0.9), lineWidth: 1))
+                .shadow(color: .black.opacity(0.08), radius: 24, y: 12)
+        }
+        .padding(24)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background {
+            // 窓のまわりは、同じ景色をぼかして広げる
+            Group {
+                if let background {
+                    Image(uiImage: background).resizable().scaledToFill()
+                } else {
+                    LinearGradient(colors: [.indigo, .orange], startPoint: .top, endPoint: .bottom)
+                }
+            }
+            .blur(radius: 50, opaque: true)
+            .overlay(Color(white: 0.97).opacity(0.6)) // 明るく空気感のあるオフホワイトに寄せる
+            .ignoresSafeArea()
         }
         .task(id: animateUntil) {
             // 垂れ終わったら描き直しの頻度を落とす
@@ -49,18 +83,24 @@ struct ContentView: View {
                   (try? await Task.sleep(for: .seconds(animateUntil.timeIntervalSinceNow))) != nil else { return }
             animateUntil = .distantPast
         }
-        .ignoresSafeArea()
-        .overlay(alignment: .bottomTrailing) {
+        .overlay(alignment: .topLeading) {
             PhotosPicker(selection: $pickerItem, matching: .images) {
                 Label("背景の写真を選ぶ", systemImage: "photo")
                     .labelStyle(.iconOnly)
-                    .padding()
-                    .background(.ultraThinMaterial, in: Circle())
+                    .font(.system(size: 17, weight: .light))
+                    .foregroundStyle(.secondary)
+                    .frame(width: 52, height: 52)
+                    .background {
+                        RoundedRectangle(cornerRadius: 16, style: .continuous)
+                            .fill(.white.opacity(0.85))
+                            .shadow(color: .black.opacity(0.08), radius: 10, y: 4)
+                    }
             }
-            .padding()
+            .padding(24)
         }
         .onChange(of: scenePhase) { _, phase in
-            if phase == .background { saveSnapshots() }
+            // バックグラウンドに回ってからの更新依頼は iOS に低優先として捨てられるので、見えているうちに
+            if phase == .inactive { saveSnapshots() }
         }
         .onChange(of: pickerItem) { _, item in
             Task {
@@ -75,7 +115,10 @@ struct ContentView: View {
     /// ウィジェット用に、今から曇りきるまでの窓を数枚描いておく。
     /// アプリを閉じていてもウィジェットの中で曇り直しが進む
     private func saveSnapshots() {
-        guard let dir = Snapshots.directory else { return }
+        guard let dir = Snapshots.directory else {
+            Logger().error("comado: App Group が使えないのでスナップショットを書き出せない")
+            return
+        }
         let fm = FileManager.default
         for old in (try? fm.contentsOfDirectory(at: dir, includingPropertiesForKeys: nil)) ?? []
         where old.lastPathComponent.hasPrefix("snapshot-") {
@@ -83,12 +126,13 @@ struct ContentView: View {
         }
         for step in 0...4 {
             let date = Date.now + fadeDuration * Double(step) / 4
-            // ponytail: 画面サイズは固定。ウィジェットは中央を切り抜いて表示するので十分
             let renderer = ImageRenderer(content: WindowView(strokes: strokes, background: background, now: date)
-                .frame(width: 390, height: 844))
+                .frame(width: 360, height: 360))
+            renderer.scale = 1.5
             guard let data = renderer.uiImage?.jpegData(compressionQuality: 0.8) else { continue }
             try? data.write(to: dir.appending(path: "snapshot-\(Int(date.timeIntervalSince1970)).jpg"))
         }
+        Logger().info("comado: スナップショットを書き出した \(dir.path(), privacy: .public)")
         WidgetCenter.shared.reloadAllTimelines()
     }
 
@@ -108,6 +152,12 @@ struct ContentView: View {
                     }
                 }
                 current = nil
+                // 描き終えて少し落ち着いたらウィジェットにも反映（続けて描く間は待つ）
+                snapshotTask?.cancel()
+                snapshotTask = Task {
+                    guard (try? await Task.sleep(for: .seconds(1))) != nil else { return }
+                    saveSnapshots()
+                }
                 strokes.removeAll { Date.now.timeIntervalSince($0.date) > fadeDuration }
                 Store.saveStrokes(strokes)
             }
@@ -144,6 +194,7 @@ struct WindowView: View {
                 }
                 .mask { fogMask(now: now) }
                 waterOverlay(now: now)
+                glass
             }
         }
     }
@@ -175,7 +226,7 @@ struct WindowView: View {
                     path.addLines(stroke.points.map { CGPoint(x: $0.x * size.width, y: $0.y * size.height) })
                     layer.opacity = clearness(stroke, now: now)
                     layer.stroke(path, with: .color(.black),
-                                 style: StrokeStyle(lineWidth: 28, lineCap: .round, lineJoin: .round))
+                                 style: StrokeStyle(lineWidth: 22, lineCap: .round, lineJoin: .round))
                 }
             }
             // 指の腹で拭っても薄い水の膜が筋状に残る
@@ -186,7 +237,7 @@ struct WindowView: View {
                     var path = Path()
                     path.addLines(stroke.points.map { CGPoint(x: $0.x * size.width, y: $0.y * size.height) })
                     layer.opacity = 0.15 * clearness(stroke, now: now)
-                    for offset in [-8.0, -3.5, 2.5, 7.0] {
+                    for offset in [-6.5, -3.0, 2.0, 5.5] {
                         layer.stroke(path.offsetBy(dx: offset * 0.6, dy: offset), with: .color(.black), lineWidth: 1.2)
                     }
                 }
@@ -225,10 +276,10 @@ struct WindowView: View {
                     layer.opacity = alpha
                     layer.blendMode = .normal
                     layer.stroke(path, with: .color(.white.opacity(0.12)),
-                                 style: StrokeStyle(lineWidth: 30, lineCap: .round, lineJoin: .round))
+                                 style: StrokeStyle(lineWidth: 24, lineCap: .round, lineJoin: .round))
                     layer.blendMode = .destinationOut
                     layer.stroke(path, with: .color(.black),
-                                 style: StrokeStyle(lineWidth: 26, lineCap: .round, lineJoin: .round))
+                                 style: StrokeStyle(lineWidth: 20, lineCap: .round, lineJoin: .round))
                 }
             }
             for stroke in strokes {
@@ -257,6 +308,25 @@ struct WindowView: View {
     /// 重みで少し縦長になった水玉
     private func beadRect(at center: CGPoint) -> CGRect {
         CGRect(x: center.x - 5.5, y: center.y - 6.25, width: 11, height: 12.5)
+    }
+
+    /// ガラスの立体感: 枠に沿った奥の影と、斜めに入る光の映り込み
+    private var glass: some View {
+        ZStack {
+            Rectangle()
+                .strokeBorder(.black.opacity(0.15), lineWidth: 8)
+                .blur(radius: 6)
+            LinearGradient(stops: [
+                .init(color: .clear, location: 0.22),
+                .init(color: .white.opacity(0.22), location: 0.32),
+                .init(color: .clear, location: 0.42),
+                .init(color: .white.opacity(0.12), location: 0.5),
+                .init(color: .clear, location: 0.56),
+            ], startPoint: .topLeading, endPoint: .bottomTrailing)
+            .blendMode(.screen)
+        }
+        .clipped()
+        .allowsHitTesting(false)
     }
 
     /// 拭った跡の透明度。しばらくはクリアなまま、終盤で一気に曇る
