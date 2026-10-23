@@ -4,7 +4,7 @@ import SwiftUI
 struct comadoApp: App {
     var body: some Scene {
         WindowGroup {
-            ContentView()
+            RoomListView()
         }
     }
 }

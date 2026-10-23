@@ -7,3 +7,6 @@ extensions:
   - product: comadoWidget
     infoPath: comadoWidget-Info.plist
     entitlementsPath: comado.entitlements
+    # 「ウィジェットを編集」用の App Intents メタデータ（scripts/gen-widget-intents.py で生成）
+    resources:
+      - Resources/Widget/Metadata.appintents

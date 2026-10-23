@@ -14,30 +14,28 @@ let fadeDuration: TimeInterval = 60 * 60
 struct Stroke: Codable {
     var points: [CGPoint] // 画面サイズに依存しないよう 0...1 に正規化
     var date: Date
-    var drips: [Drip] = []
 }
 
-/// 線から垂れる水滴。拭った筋が下へ伸びていく
-struct Drip: Codable {
-    var start: CGPoint
-    var length: CGFloat       // 画面の高さに対する割合
-    var delay: TimeInterval   // stroke.date から垂れ始めるまで
-    var duration: TimeInterval
-}
-
-struct ContentView: View {
-    @State private var strokes = Store.loadStrokes()
+/// 1 つのルームの窓。ここで描く
+struct RoomView: View {
+    let room: Room
+    @State private var strokes: [Stroke]
     @State private var current: Stroke?
-    @State private var background = Store.loadBackground()
+    @State private var background: UIImage?
     @State private var pickerItem: PhotosPickerItem?
-    /// 水滴が垂れ終わる時刻。それまでは滑らかに、以降は曇り直しに足りる 1 秒ごとに描き直す
-    @State private var animateUntil = Date.distantPast
     @Environment(\.scenePhase) private var scenePhase
     @State private var snapshotTask: Task<Void, Never>?
+    @Environment(\.dismiss) private var dismiss
+
+    init(room: Room) {
+        self.room = room
+        _strokes = State(initialValue: Store.loadStrokes(room))
+        _background = State(initialValue: Store.loadBackground(room))
+    }
 
     var body: some View {
         // 窓は正方形。端末の画面の形が違っても、線の形とウィジェットでの見え方が同じになる
-        TimelineView(.animation(minimumInterval: animateUntil > .now ? 1.0 / 30 : 1)) { timeline in
+        TimelineView(.periodic(from: .now, by: 1)) { timeline in
             WindowView(strokes: current.map { strokes + [$0] } ?? strokes, background: background, now: timeline.date)
         }
         .aspectRatio(1, contentMode: .fit)
@@ -77,27 +75,21 @@ struct ContentView: View {
             .overlay(Color(white: 0.97).opacity(0.6)) // 明るく空気感のあるオフホワイトに寄せる
             .ignoresSafeArea()
         }
-        .task(id: animateUntil) {
-            // 垂れ終わったら描き直しの頻度を落とす
-            guard animateUntil > .now,
-                  (try? await Task.sleep(for: .seconds(animateUntil.timeIntervalSinceNow))) != nil else { return }
-            animateUntil = .distantPast
-        }
-        .overlay(alignment: .topLeading) {
-            PhotosPicker(selection: $pickerItem, matching: .images) {
-                Label("背景の写真を選ぶ", systemImage: "photo")
-                    .labelStyle(.iconOnly)
-                    .font(.system(size: 17, weight: .light))
-                    .foregroundStyle(.secondary)
-                    .frame(width: 52, height: 52)
-                    .background {
-                        RoundedRectangle(cornerRadius: 16, style: .continuous)
-                            .fill(.white.opacity(0.85))
-                            .shadow(color: .black.opacity(0.08), radius: 10, y: 4)
-                    }
+        .overlay(alignment: .top) {
+            HStack {
+                Button { dismiss() } label: {
+                    Label("ルーム一覧に戻る", systemImage: "chevron.left").softButton()
+                }
+                Spacer()
+                Text(room.name).font(.system(size: 17, weight: .light)).foregroundStyle(.secondary)
+                Spacer()
+                PhotosPicker(selection: $pickerItem, matching: .images) {
+                    Label("背景の写真を選ぶ", systemImage: "photo").softButton()
+                }
             }
             .padding(24)
         }
+        .toolbar(.hidden, for: .navigationBar)
         .onChange(of: scenePhase) { _, phase in
             // バックグラウンドに回ってからの更新依頼は iOS に低優先として捨てられるので、見えているうちに
             if phase == .inactive { saveSnapshots() }
@@ -107,7 +99,7 @@ struct ContentView: View {
                 guard let data = try? await item?.loadTransferable(type: Data.self),
                       let image = UIImage(data: data) else { return }
                 background = image
-                Store.saveBackground(data)
+                Store.saveBackground(data, room)
             }
         }
     }
@@ -119,18 +111,14 @@ struct ContentView: View {
             Logger().error("comado: App Group が使えないのでスナップショットを書き出せない")
             return
         }
-        let fm = FileManager.default
-        for old in (try? fm.contentsOfDirectory(at: dir, includingPropertiesForKeys: nil)) ?? []
-        where old.lastPathComponent.hasPrefix("snapshot-") {
-            try? fm.removeItem(at: old)
-        }
+        Snapshots.remove(room)
         for step in 0...4 {
             let date = Date.now + fadeDuration * Double(step) / 4
             let renderer = ImageRenderer(content: WindowView(strokes: strokes, background: background, now: date)
                 .frame(width: 360, height: 360))
             renderer.scale = 1.5
             guard let data = renderer.uiImage?.jpegData(compressionQuality: 0.8) else { continue }
-            try? data.write(to: dir.appending(path: "snapshot-\(Int(date.timeIntervalSince1970)).jpg"))
+            try? data.write(to: dir.appending(path: "snapshot-\(room.id)-\(Int(date.timeIntervalSince1970)).jpg"))
         }
         Logger().info("comado: スナップショットを書き出した \(dir.path(), privacy: .public)")
         WidgetCenter.shared.reloadAllTimelines()
@@ -144,13 +132,7 @@ struct ContentView: View {
                 current?.points.append(point)
             }
             .onEnded { _ in
-                if var stroke = current {
-                    stroke.drips = makeDrips(for: stroke)
-                    strokes.append(stroke)
-                    if let end = stroke.drips.map({ stroke.date + $0.delay + $0.duration }).max() {
-                        animateUntil = max(animateUntil, end)
-                    }
-                }
+                if let current { strokes.append(current) }
                 current = nil
                 // 描き終えて少し落ち着いたらウィジェットにも反映（続けて描く間は待つ）
                 snapshotTask?.cancel()
@@ -159,21 +141,8 @@ struct ContentView: View {
                     saveSnapshots()
                 }
                 strokes.removeAll { Date.now.timeIntervalSince($0.date) > fadeDuration }
-                Store.saveStrokes(strokes)
+                Store.saveStrokes(strokes, room)
             }
-    }
-
-    /// 長くなぞった線ほど垂れやすい。タップ程度では垂れない
-    private func makeDrips(for stroke: Stroke) -> [Drip] {
-        let endedAt = Date.now.timeIntervalSince(stroke.date)
-        guard stroke.points.count >= 20 else { return [] }
-        let count = Int.random(in: 1...2)
-        return (0..<count).map { _ in
-            Drip(start: stroke.points.randomElement()!,
-                 length: .random(in: 0.04...0.2),
-                 delay: endedAt + .random(in: 0...3),
-                 duration: .random(in: 4...10))
-        }
     }
 }
 
@@ -242,26 +211,10 @@ struct WindowView: View {
                     }
                 }
             }
-            ctx.blendMode = .destinationOut
-            // 水滴は細いので、強くぼかすと拭えずに見えなくなる
-            ctx.drawLayer { layer in
-                layer.addFilter(.blur(radius: 1.5))
-                for stroke in all {
-                    layer.opacity = clearness(stroke, now: now)
-                    for drip in stroke.drips {
-                        guard let (top, bottom) = dripSegment(drip, of: stroke, now: now, size: size) else { continue }
-                        var trail = Path()
-                        trail.move(to: top)
-                        trail.addLine(to: bottom)
-                        layer.stroke(trail, with: .color(.black), style: StrokeStyle(lineWidth: 7, lineCap: .round))
-                        layer.fill(Path(ellipseIn: beadRect(at: bottom)), with: .color(.black))
-                    }
-                }
-            }
         }
     }
 
-    /// 拭った跡の縁にたまった水と、垂れる水滴の先端の水玉
+    /// 拭った跡の縁にたまった水
     private func waterOverlay(now: Date) -> some View {
         Canvas { ctx, size in
             let all = strokes
@@ -282,32 +235,8 @@ struct WindowView: View {
                                  style: StrokeStyle(lineWidth: 20, lineCap: .round, lineJoin: .round))
                 }
             }
-            for stroke in strokes {
-                let alpha = clearness(stroke, now: now)
-                guard alpha > 0 else { continue }
-                ctx.opacity = alpha
-                for drip in stroke.drips {
-                    guard let (_, center) = dripSegment(drip, of: stroke, now: now, size: size) else { continue }
-                    drawBead(ctx, in: beadRect(at: center))
-                }
-            }
         }
         .allowsHitTesting(false)
-    }
-
-    /// 水滴の筋の上端と、今の先端の位置。まだ垂れ始めていなければ nil
-    private func dripSegment(_ drip: Drip, of stroke: Stroke, now: Date, size: CGSize) -> (CGPoint, CGPoint)? {
-        let progress = min((now.timeIntervalSince(stroke.date) - drip.delay) / drip.duration, 1)
-        guard progress > 0 else { return nil }
-        // 最初は速く、だんだん止まる
-        let grown = drip.length * (1 - (1 - progress) * (1 - progress))
-        let top = CGPoint(x: drip.start.x * size.width, y: drip.start.y * size.height)
-        return (top, CGPoint(x: top.x, y: top.y + grown * size.height))
-    }
-
-    /// 重みで少し縦長になった水玉
-    private func beadRect(at center: CGPoint) -> CGRect {
-        CGRect(x: center.x - 5.5, y: center.y - 6.25, width: 11, height: 12.5)
     }
 
     /// ガラスの立体感: 枠に沿った奥の影と、斜めに入る光の映り込み
@@ -333,29 +262,6 @@ struct WindowView: View {
     private func clearness(_ stroke: Stroke, now: Date) -> Double {
         let t = now.timeIntervalSince(stroke.date) / fadeDuration
         return 1 - t * t * t
-    }
-}
-
-enum Store {
-    private static let strokesURL = URL.documentsDirectory.appending(path: "strokes.json")
-    private static let backgroundURL = URL.documentsDirectory.appending(path: "background")
-
-    static func loadStrokes() -> [Stroke] {
-        guard let data = try? Data(contentsOf: strokesURL),
-              let strokes = try? JSONDecoder().decode([Stroke].self, from: data) else { return [] }
-        return strokes.filter { Date.now.timeIntervalSince($0.date) <= fadeDuration }
-    }
-
-    static func saveStrokes(_ strokes: [Stroke]) {
-        try? JSONEncoder().encode(strokes).write(to: strokesURL)
-    }
-
-    static func loadBackground() -> UIImage? {
-        UIImage(contentsOfFile: backgroundURL.path())
-    }
-
-    static func saveBackground(_ data: Data) {
-        try? data.write(to: backgroundURL)
     }
 }
 
@@ -415,8 +321,18 @@ struct SplitMix64: RandomNumberGenerator {
     }
 }
 
-/// アプリとウィジェットで共有する置き場所 (App Group)
+/// アプリとウィジェットで共有する置き場所 (App Group)。
+/// 窓の画像は「snapshot-<ルーム ID>-<UNIX 時刻>.jpg」
 enum Snapshots {
+    static func remove(_ room: Room) {
+        guard let dir = directory else { return }
+        let fm = FileManager.default
+        for old in (try? fm.contentsOfDirectory(at: dir, includingPropertiesForKeys: nil)) ?? []
+        where old.lastPathComponent.hasPrefix("snapshot-\(room.id)-") {
+            try? fm.removeItem(at: old)
+        }
+    }
+
     /// xtool は App Group の ID を「group.<書き換え後のアプリの bundle ID>」にするので、自分の bundle ID から組み立てる
     static var directory: URL? {
         guard let appID = Bundle.main.bundleIdentifier else { return nil }
